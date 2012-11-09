@@ -1,13 +1,20 @@
 /*
- * Alexanders Stromzaehler - Zaehlt S0-Impulse von bis zu 5 Zaehlern und gibt alle 5 Sekunden
- * gezaehlten Impulse und die Dauer zwischen den letzten 2 Impulsen auf einem Kanal in ms aus
+
+Smartmeter:
+
+Poll Input pins for state change and transmit a packet containing the pin ID if one is detected
+See if this works better than the interrupt-centered solution
+
+Never use any kind of delay function in this code!!!
+
 */
 
 #include <RF12.h>
 #include <Ports.h>
-#include <avr/interrupt.h>   
 #include <avr/wdt.h>   
 #include <WProgram.h>
+
+//#define DEBUG_ENABLED
 
 #define LED1 8
 #define LED2 9
@@ -15,108 +22,133 @@
 #define NODE_ID 5
 #define NETGROUP 42
 
+#define COUNTER_ID 0x0001
 #define NUM_COUNTERS 5
 
-char state[NUM_COUNTERS];
-char last_state[NUM_COUNTERS];
-uint32_t last_time_high[NUM_COUNTERS];
+#define COUNTER1 PIND4
+#define COUNTER2 PIND3
+#define COUNTER3 PIND5
+#define COUNTER4 PIND1
+#define COUNTER5 PIND0
+
+
+// this constant won't change:
+
+#ifdef DEBUG_ENABLED
+const int  counterPin[NUM_COUNTERS] = {5, 6}; // testpins
+#else
+const int  counterPin[NUM_COUNTERS] = {
+  COUNTER1,
+  COUNTER2,
+  COUNTER3,
+  COUNTER4,
+  COUNTER5,
+};    // the pins that the counters are connected to
+#endif
+
 
 struct {
-	uint32_t counter[NUM_COUNTERS];
-	//uint32_t duration[NUM_COUNTERS];
+	uint32_t counter_millis;
+	uint32_t active_counter;
 } payload;
 
 
-MilliTimer sendTimer;
-
 MilliTimer led1Timer;
-MilliTimer led2Timer;
 
 
-
-ISR( PCINT2_vect ) {
-	state[4] = (PIND & (1 << PIND0));
-	state[3] = (PIND & (1 << PIND1));
-	state[2] = (PIND & (1 << PIND3));
-	state[1] = (PIND & (1 << PIND4));
-	state[0] = (PIND & (1 << PIND5));
-
-	for (int i = 0 ; i < NUM_COUNTERS ; i++) {
-		if (state[i] == 0) {                          // Input Low = Impuls
-			if (last_state[i] == 1) {                    // fallende Flanke = neuer Impuls
-				payload.counter[i]++;
-				//payload.duration[i] = millis() - last_time_high[i];
-				//last_time_high[i] = millis();
-				last_state[i] = 0;
-				digitalWrite(LED1, HIGH);
-				
-			}
-		} else {                                      // Input High = kein Impuls
-			last_state[i] = 1;
-		} 
-	}
-}
+// Variables will change:
+int counterState[NUM_COUNTERS];         // current state of the button
+int lastCounterState[NUM_COUNTERS];     // previous state of the button
+uint32_t counterMillis[NUM_COUNTERS];
+uint32_t lastCounterMillis[NUM_COUNTERS];
 
 void setup() {
 
-	pinMode(0, INPUT);
-	pinMode(1, INPUT);
-	pinMode(3, INPUT);
-	pinMode(4, INPUT);
-	pinMode(5, INPUT);
+  for (int i = 0; i < NUM_COUNTERS; i++) {
+    counterState[i] = 0;
+    lastCounterState[i] = 0;
+    lastCounterMillis[i] = 0;
+    // initialize the button pin as a input:
+    pinMode(counterPin[i], INPUT);
+    digitalWrite(counterPin[i], HIGH);
+  }
+  // initialize the LED as an output:
+  pinMode(LED1, OUTPUT);
 
-	// enable internal pullups
-	digitalWrite(0, HIGH);
-	digitalWrite(1, HIGH);
-	digitalWrite(3, HIGH);
-	digitalWrite(4, HIGH);
-	digitalWrite(5, HIGH);
-
-	pinMode(LED1, OUTPUT);
-	pinMode(LED2, OUTPUT);
- 
- //make digital pins 0-1 and 3-5 into pin change interrupts  
- PCICR |= (1 << PCIE2);
-
- PCMSK2 |= (1 << PCINT16);
- PCMSK2 |= (1 << PCINT17);  
- PCMSK2 |= (1 << PCINT19);  
- PCMSK2 |= (1 << PCINT20);  
- PCMSK2 |= (1 << PCINT21);  
- 
-	sei();
 	rf12_initialize(NODE_ID, RF12_868MHZ, NETGROUP);
 	rf12_encrypt(RF12_EEPROM_EKEY);
-	rf12_easyInit(0);
+ 
 
-	for (int i = 0; i < NUM_COUNTERS; i++) {
-		payload.counter[i] = 0;
-		//payload.duration[i] = 0;
-	}
+#ifdef DEBUG_ENABLED
+  // initialize serial communication:
+  Serial.begin(57600);
+  Serial.println("Warum geht das nicht?");
+  wdt_enable(WDTO_1S);
+#else
+  wdt_enable(WDTO_60MS); // sending a packet of 64bit length takes about ??ms
+#endif
 }
+
 
 void loop() {
-	wdt_enable(WDTO_8S);
-	//rf12_easyPoll();
+  for (int i = 0; i < NUM_COUNTERS; i++) { // loop through the counters
+    // read the counter input pin:
+    counterState[i] = digitalRead(counterPin[i]);
 
-	if (sendTimer.poll(5000)) {
-		while (!rf12_canSend()) {
-			rf12_easyPoll();
-		}
-		rf12_easySend(&payload, sizeof(payload));
-		for (int i = 0; i < NUM_COUNTERS; i++) {
-			payload.counter[i] = 0;
-			//payload.duration[i] = 0;
-		}
-		digitalWrite(LED2, HIGH);
-	}
+    // compare the counterState to its previous state
+    if (counterState[i] != lastCounterState[i]) {
+      if (counterState[i] == LOW) {
+        digitalWrite(LED1, HIGH);
+        // if the current state is HIGH then the button
+        // wend from off to on:
+#ifdef DEBUG_ENABLED
+        Serial.print(i);
+        Serial.println(" LOW");
+#endif
 
-	if (led1Timer.poll(90)) {
-		digitalWrite(LED1, LOW);
-	}
+				payload.active_counter = i;
+				counterMillis[i] = millis();
+				payload.counter_millis = counterMillis[i];
+ 
+        if (counterMillis[i] - lastCounterMillis[i] > 90) {
+				// send a packet
+				while (!rf12_canSend()) 
+					rf12_recvDone();
 
-	if (led2Timer.poll(90)) {
-		digitalWrite(LED2, LOW);
-	}
-	wdt_reset();
+				// send as broadcast, payload will be encrypted
+				rf12_sendStart(0, &payload, sizeof(payload));
+				rf12_sendWait(1);
+        }
+        lastCounterMillis[i] = counterMillis[i];
+#ifdef DEBUG_ENABLED
+      } else {
+        // transision from LOW to HIGH means the pulse is over
+        // we're not interested in that
+        Serial.print(i);
+        Serial.println(" HIGH"); 
+#endif
+      }
+      Serial.println();
+    }
+    // save the current state as the last state, 
+    //for next time through the loop
+    lastCounterState[i] = counterState[i];
+
+    if (led1Timer.poll(90)) {
+      digitalWrite(LED1, LOW);
+    }
+  }
+  wdt_reset();
+  
 }
+
+
+
+
+
+
+
+
+
+
+// vim: expandtab sw=2 ts=2

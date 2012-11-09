@@ -6,8 +6,7 @@
 #include <RF12.h>
 #include <Ports.h>
 #include <avr/interrupt.h>   
-#include <util/delay.h>
-#include <util/atomic.h>
+#include <avr/wdt.h>   
 #include <WProgram.h>
 
 #define LED1 8
@@ -23,12 +22,16 @@ char last_state[NUM_COUNTERS];
 uint32_t last_time_high[NUM_COUNTERS];
 
 struct {
-	char counter[NUM_COUNTERS];
-	uint32_t duration[NUM_COUNTERS];
+	uint32_t counter[NUM_COUNTERS];
+	//uint32_t duration[NUM_COUNTERS];
 } payload;
 
 
 MilliTimer sendTimer;
+
+MilliTimer led1Timer;
+MilliTimer led2Timer;
+
 
 
 ISR( PCINT2_vect ) {
@@ -42,9 +45,11 @@ ISR( PCINT2_vect ) {
 		if (state[i] == 0) {                          // Input Low = Impuls
 			if (last_state[i] == 1) {                    // fallende Flanke = neuer Impuls
 				payload.counter[i]++;
-				payload.duration[i] = millis() - last_time_high[i];
-				last_time_high[i] = millis();
+				//payload.duration[i] = millis() - last_time_high[i];
+				//last_time_high[i] = millis();
 				last_state[i] = 0;
+				digitalWrite(LED1, HIGH);
+				
 			}
 		} else {                                      // Input High = kein Impuls
 			last_state[i] = 1;
@@ -53,6 +58,7 @@ ISR( PCINT2_vect ) {
 }
 
 void setup() {
+
 	pinMode(0, INPUT);
 	pinMode(1, INPUT);
 	pinMode(3, INPUT);
@@ -78,23 +84,39 @@ void setup() {
  PCMSK2 |= (1 << PCINT20);  
  PCMSK2 |= (1 << PCINT21);  
  
+	sei();
 	rf12_initialize(NODE_ID, RF12_868MHZ, NETGROUP);
 	rf12_encrypt(RF12_EEPROM_EKEY);
 	rf12_easyInit(0);
+
+	for (int i = 0; i < NUM_COUNTERS; i++) {
+		payload.counter[i] = 0;
+		//payload.duration[i] = 0;
+	}
 }
 
 void loop() {
+	wdt_enable(WDTO_8S);
+	//rf12_easyPoll();
+
 	if (sendTimer.poll(5000)) {
-		cli();
-		rf12_easyPoll();
+		while (!rf12_canSend()) {
+			rf12_easyPoll();
+		}
 		rf12_easySend(&payload, sizeof(payload));
 		for (int i = 0; i < NUM_COUNTERS; i++) {
 			payload.counter[i] = 0;
-			payload.duration[i] = 0;
+			//payload.duration[i] = 0;
 		}
-		sei();
 		digitalWrite(LED2, HIGH);
-		_delay_ms(50);
+	}
+
+	if (led1Timer.poll(90)) {
+		digitalWrite(LED1, LOW);
+	}
+
+	if (led2Timer.poll(90)) {
 		digitalWrite(LED2, LOW);
 	}
+	wdt_reset();
 }

@@ -82,7 +82,7 @@ void setup() {
 #ifdef DEBUG_ENABLED
   // initialize serial communication:
   Serial.begin(57600);
-  Serial.println("Warum geht das nicht?");
+  Serial.println("[Alis Smartmeter - Transmitter]");
   wdt_enable(WDTO_1S);
 #else
   wdt_enable(WDTO_60MS); // sending a packet of 64bit length takes about ??ms
